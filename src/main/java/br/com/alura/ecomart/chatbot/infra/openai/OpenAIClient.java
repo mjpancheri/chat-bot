@@ -1,10 +1,12 @@
 package br.com.alura.ecomart.chatbot.infra.openai;
 
 import com.theokanning.openai.OpenAiHttpException;
+import com.theokanning.openai.completion.chat.ChatCompletionChunk;
 import com.theokanning.openai.completion.chat.ChatCompletionRequest;
 import com.theokanning.openai.completion.chat.ChatMessage;
 import com.theokanning.openai.completion.chat.ChatMessageRole;
 import com.theokanning.openai.service.OpenAiService;
+import io.reactivex.Flowable;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -15,17 +17,20 @@ import java.util.Arrays;
 public class OpenAIClient {
 
     private final String apiKey;
+    private final String model;
     private final OpenAiService service;
 
-    public OpenAIClient(@Value("${app.openai.api.key}") String apiKey) {
+    public OpenAIClient(@Value("${app.openai.api.key}") String apiKey, @Value("${app.openai.model}") String model) {
         this.apiKey = apiKey;
+        this.model = model;
         this.service = new OpenAiService(apiKey, Duration.ofSeconds(60));
     }
 
-    public String enviarRequisicaoChatCompletion(DadosRequisicaoChatCompletion dados) {
+    public Flowable<ChatCompletionChunk> enviarRequisicaoChatCompletion(DadosRequisicaoChatCompletion dados) {
         var request = ChatCompletionRequest
                 .builder()
-                .model("gpt-4-1106-preview")
+                .model(model)
+                .stream(true)
                 .messages(Arrays.asList(
                         new ChatMessage(
                                 ChatMessageRole.SYSTEM.value(),
@@ -39,10 +44,7 @@ public class OpenAIClient {
         var tentativas = 0;
         while (tentativas++ != 5) {
             try {
-                return service
-                        .createChatCompletion(request)
-                        .getChoices().get(0)
-                        .getMessage().getContent();
+                return service.streamChatCompletion(request);
             } catch (OpenAiHttpException ex) {
                 var errorCode = ex.statusCode;
                 switch (errorCode) {
