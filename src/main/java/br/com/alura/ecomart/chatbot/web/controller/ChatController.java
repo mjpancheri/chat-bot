@@ -26,7 +26,13 @@ public class ChatController {
 
     @PostMapping
     @ResponseBody
-    public ResponseBodyEmitter responderPergunta(@RequestBody PerguntaDto dto) {
+    public String responderPergunta(@RequestBody PerguntaDto dto) {
+        return service.responderPerguntaAssistant(dto.pergunta());
+    }
+
+    @PostMapping("v1")
+    @ResponseBody
+    public ResponseBodyEmitter responderPerguntaV1(@RequestBody PerguntaDto dto) {
         var fluxoResposta = service.responderPergunta(dto.pergunta());
         var emitter = new ResponseBodyEmitter();
 

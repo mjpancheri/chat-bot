@@ -22,4 +22,12 @@ public class ChatbotService {
 
         return client.enviarRequisicaoChatCompletion(dados);
     }
+
+    public String responderPerguntaAssistant(String pergunta) {
+        var promptSistema = "Você é um chatbot de atendimento a clientes de um ecommerce e " +
+                "deve responder apenas perguntas relacionadas com o ecommerce";
+        var dados = new DadosRequisicaoChatCompletion(promptSistema, pergunta);
+
+        return client.enviarRequisicaoChatCompletionAssistant(dados);
+    }
 }
