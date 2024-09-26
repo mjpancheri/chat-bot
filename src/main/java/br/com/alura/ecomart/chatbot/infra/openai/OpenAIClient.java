@@ -1,13 +1,22 @@
 package br.com.alura.ecomart.chatbot.infra.openai;
 
+import br.com.alura.ecomart.chatbot.domain.DadosCalculoFrete;
+import br.com.alura.ecomart.chatbot.domain.service.CalculadorDeFrete;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.theokanning.openai.OpenAiHttpException;
 import com.theokanning.openai.completion.chat.ChatCompletionChunk;
 import com.theokanning.openai.completion.chat.ChatCompletionRequest;
+import com.theokanning.openai.completion.chat.ChatFunction;
+import com.theokanning.openai.completion.chat.ChatFunctionCall;
 import com.theokanning.openai.completion.chat.ChatMessage;
 import com.theokanning.openai.completion.chat.ChatMessageRole;
 import com.theokanning.openai.messages.Message;
 import com.theokanning.openai.messages.MessageRequest;
+import com.theokanning.openai.runs.Run;
 import com.theokanning.openai.runs.RunCreateRequest;
+import com.theokanning.openai.runs.SubmitToolOutputRequestItem;
+import com.theokanning.openai.runs.SubmitToolOutputsRequest;
+import com.theokanning.openai.service.FunctionExecutor;
 import com.theokanning.openai.service.OpenAiService;
 import com.theokanning.openai.threads.ThreadRequest;
 import io.reactivex.Flowable;
@@ -30,13 +39,15 @@ public class OpenAIClient {
     private final String assistantId;
     private final OpenAiService service;
     private String threadId;
+    private final CalculadorDeFrete calculadorDeFrete;
 
     public OpenAIClient(@Value("${app.openai.api.key}") String apiKey, @Value("${app.openai.model}") String model,
-                        @Value("${app.openai.assistant.id}") String assistantId) {
+                        @Value("${app.openai.assistant.id}") String assistantId, CalculadorDeFrete calculadorDeFrete) {
         this.apiKey = apiKey;
         this.model = model;
         this.assistantId = assistantId;
         this.service = new OpenAiService(apiKey, Duration.ofSeconds(60));
+        this.calculadorDeFrete = calculadorDeFrete;
     }
 
     public String enviarRequisicaoChatCompletionAssistant(DadosRequisicaoChatCompletion dados) {
@@ -64,13 +75,45 @@ public class OpenAIClient {
                 .build();
         var run = service.createRun(threadId, runRequest);
 
+        var concluido = false;
+        var precisaChamarFuncao = false;
         try {
-            while (!run.getStatus().equalsIgnoreCase("completed")) {
-                Thread.sleep(1000L * 10);
+            while (!concluido && !precisaChamarFuncao) {
+                Thread.sleep(1000 * 10);
                 run = service.retrieveRun(threadId, run.getId());
+                concluido = run.getStatus().equalsIgnoreCase("completed");
+                precisaChamarFuncao = run.getRequiredAction() != null;
             }
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
             throw new RuntimeException(e);
+        }
+
+        if (precisaChamarFuncao) {
+            var precoDoFrete = chamarFuncao(run);
+            var submitRequest = SubmitToolOutputsRequest
+                    .builder()
+                    .toolOutputs(Arrays.asList(
+                            new SubmitToolOutputRequestItem(
+                                    run
+                                            .getRequiredAction()
+                                            .getSubmitToolOutputs()
+                                            .getToolCalls()
+                                            .get(0)
+                                            .getId(),
+                                    precoDoFrete)
+                    ))
+                    .build();
+            service.submitToolOutputs(threadId, run.getId(), submitRequest);
+
+            try {
+                while (!concluido) {
+                    Thread.sleep(1000 * 10);
+                    run = service.retrieveRun(threadId, run.getId());
+                    concluido = run.getStatus().equalsIgnoreCase("completed");
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
 
         var mensagens = service.listMessages(threadId);
@@ -81,6 +124,22 @@ public class OpenAIClient {
                 .sorted(Comparator.comparingInt(Message::getCreatedAt).reversed())
                 .findFirst().get().getContent().get(0).getText()
                 .getValue().replaceAll("\\\u3010.*?\\\u3011", ""); // remove source ref
+    }
+
+    private String chamarFuncao(Run run) {
+        try {
+            var funcao = run.getRequiredAction().getSubmitToolOutputs().getToolCalls().get(0).getFunction();
+            var funcaoCalcularFrete = ChatFunction.builder()
+                    .name("calcularFrete")
+                    .executor(DadosCalculoFrete.class, d -> calculadorDeFrete.calcular(d))
+                    .build();
+
+            var executorDeFuncoes = new FunctionExecutor(Collections.singletonList(funcaoCalcularFrete));
+            var functionCall = new ChatFunctionCall(funcao.getName(), new ObjectMapper().readTree(funcao.getArguments()));
+            return executorDeFuncoes.execute(functionCall).toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public Flowable<ChatCompletionChunk> enviarRequisicaoChatCompletion(DadosRequisicaoChatCompletion dados) {
